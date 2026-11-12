@@ -9,10 +9,11 @@ REMEMBER 是一款 Windows 桌面小组件。它像可收起的背包格子：�
 - 双击查看原图，支持滚轮缩放和拖动平移。
 - 增减网格行列、切换显示器、移动面板并吸附屏幕边缘。
 - 5 秒无操作后自动收起；支持通过托盘菜单设置开机自启。
+- 可从托盘菜单检查更新，下载安装新版并替换旧程序文件。
 
 ## 下载和使用
 
-[点击下载最新 Windows x64 版本](https://github.com/meowworry-blip/REMEMBER/releases/latest/download/REMEMBER-win-x64.zip)，解压到固定位置后运行 `REMEMBER.exe`。详细操作见 [使用说明](使用说明.md)。
+[点击下载最新 Windows x64 版本](https://github.com/meowworry-blip/REMEMBER/releases/latest/download/REMEMBER-win-x64.zip)，解压到自己有写入权限的固定位置后运行 `REMEMBER.exe`。详细操作见 [使用说明](使用说明.md)。
 
 图片和文字保存在本机 `%LOCALAPPDATA%\REMEMBER`。发布包不包含这些个人数据。
 

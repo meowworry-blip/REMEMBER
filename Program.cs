@@ -1,5 +1,8 @@
+using System.Diagnostics;
 using System.Drawing.Drawing2D;
+using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Win32;
 
@@ -8,8 +11,19 @@ namespace Remember;
 internal static class Program
 {
     [STAThread]
-    private static void Main()
+    private static void Main(string[] args)
     {
+        if (args.Length == 4 && args[0] == "--replace-install" &&
+            int.TryParse(args[2], out int previousPid))
+        {
+            AppUpdater.ReplaceInstall(args[1], previousPid, args[3]);
+            return;
+        }
+
+        if (args.Length == 3 && args[0] == "--cleanup-update" &&
+            int.TryParse(args[2], out int helperPid))
+            _ = Task.Run(() => AppUpdater.CleanupStage(args[1], helperPid));
+
         using var mutex = new Mutex(true, @"Local\REMEMBERWidget", out bool firstInstance);
         if (!firstInstance)
         {
@@ -24,6 +38,160 @@ internal static class Program
         {
             MessageBox.Show(ex.Message, "REMEMBER 启动失败", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+}
+
+internal static class AppUpdater
+{
+    private const string LatestRelease =
+        "https://api.github.com/repos/meowworry-blip/REMEMBER/releases/latest";
+    private const string AssetName = "REMEMBER-win-x64.zip";
+
+    public static async Task<bool> CheckAndInstallAsync(Form owner)
+    {
+        string? stage = null;
+        bool handedOff = false;
+        try
+        {
+            using var client = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+            client.DefaultRequestHeaders.UserAgent.ParseAdd("REMEMBER/1.0");
+            using JsonDocument release = JsonDocument.Parse(
+                await client.GetStringAsync(LatestRelease));
+            JsonElement root = release.RootElement;
+            string tag = root.GetProperty("tag_name").GetString() ?? "";
+            if (!Version.TryParse(tag.TrimStart('v', 'V'), out Version? latest))
+                throw new InvalidDataException("无法识别最新版本号。");
+
+            Version assembly = typeof(Program).Assembly.GetName().Version ?? new Version(0, 0, 0);
+            Version current = new(assembly.Major, assembly.Minor, Math.Max(0, assembly.Build));
+            if (latest <= current)
+            {
+                MessageBox.Show(owner, $"当前已是最新版本 v{current}。", "REMEMBER",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return false;
+            }
+
+            JsonElement asset = root.GetProperty("assets").EnumerateArray()
+                .FirstOrDefault(x => x.GetProperty("name").GetString() == AssetName);
+            if (asset.ValueKind == JsonValueKind.Undefined)
+                throw new InvalidDataException("最新版本缺少 Windows 安装包。");
+
+            if (MessageBox.Show(owner,
+                $"发现 REMEMBER {tag}。现在下载并安装，然后重启程序？",
+                "REMEMBER 更新", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question) != DialogResult.Yes)
+                return false;
+
+            string url = asset.GetProperty("browser_download_url").GetString()
+                ?? throw new InvalidDataException("安装包地址无效。");
+            string digest = asset.GetProperty("digest").GetString() ?? "";
+            if (!digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("安装包缺少 SHA-256 校验值。");
+
+            stage = Path.Combine(Path.GetTempPath(), "REMEMBER-update-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stage);
+            string archive = Path.Combine(stage, AssetName);
+            using (HttpResponseMessage response = await client.GetAsync(url,
+                HttpCompletionOption.ResponseHeadersRead))
+            {
+                response.EnsureSuccessStatusCode();
+                await using Stream input = await response.Content.ReadAsStreamAsync();
+                await using var output = File.Create(archive);
+                await input.CopyToAsync(output);
+            }
+
+            using var archiveStream = File.OpenRead(archive);
+            string actual = Convert.ToHexString(SHA256.HashData(archiveStream));
+            if (!actual.Equals(digest[7..], StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("下载的安装包校验失败。");
+
+            string unpacked = Path.Combine(stage, "unpacked");
+            ZipFile.ExtractToDirectory(archive, unpacked);
+            string stagedExe = Path.Combine(unpacked, "REMEMBER", "REMEMBER.exe");
+            if (!File.Exists(stagedExe))
+                throw new InvalidDataException("安装包中没有 REMEMBER.exe。");
+
+            var helper = new ProcessStartInfo(stagedExe) { UseShellExecute = false };
+            helper.ArgumentList.Add("--replace-install");
+            helper.ArgumentList.Add(Application.ExecutablePath);
+            helper.ArgumentList.Add(Environment.ProcessId.ToString());
+            helper.ArgumentList.Add(stage);
+            _ = Process.Start(helper) ?? throw new IOException("无法启动更新程序。");
+            handedOff = true;
+            return true;
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(owner, "更新失败：" + ex.Message, "REMEMBER",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return false;
+        }
+        finally
+        {
+            // A successful update transfers ownership of this folder to the helper.
+            if (stage != null && !handedOff)
+                TryDeleteStage(stage);
+        }
+    }
+
+    public static void ReplaceInstall(string target, int previousPid, string stage)
+    {
+        try
+        {
+            try
+            {
+                using Process previous = Process.GetProcessById(previousPid);
+                if (!previous.WaitForExit(30000))
+                    throw new IOException("旧版没有退出。请从托盘退出后重试。");
+            }
+            catch (ArgumentException) { /* The old process has already exited. */ }
+
+            string source = Environment.ProcessPath
+                ?? throw new IOException("无法定位更新程序。");
+            if (!Path.GetFileName(target).Equals("REMEMBER.exe",
+                StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("更新目标不是 REMEMBER.exe。");
+            string incoming = target + ".incoming";
+            File.Copy(source, incoming, true);
+            File.Move(incoming, target, true);
+
+            var launch = new ProcessStartInfo(target) { UseShellExecute = false };
+            launch.ArgumentList.Add("--cleanup-update");
+            launch.ArgumentList.Add(stage);
+            launch.ArgumentList.Add(Environment.ProcessId.ToString());
+            _ = Process.Start(launch) ?? throw new IOException("新版安装完成，但无法自动启动。");
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show("更新安装失败：" + ex.Message, "REMEMBER",
+                MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    public static void CleanupStage(string stage, int helperPid)
+    {
+        try
+        {
+            using (Process helper = Process.GetProcessById(helperPid))
+                helper.WaitForExit(30000);
+        }
+        catch (ArgumentException) { }
+        TryDeleteStage(stage);
+    }
+
+    private static void TryDeleteStage(string stage)
+    {
+        try
+        {
+            string full = Path.GetFullPath(stage).TrimEnd(Path.DirectorySeparatorChar);
+            string parent = Path.GetDirectoryName(full) ?? "";
+            if (!parent.Equals(Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar),
+                    StringComparison.OrdinalIgnoreCase) ||
+                !Path.GetFileName(full).StartsWith("REMEMBER-update-", StringComparison.Ordinal))
+                return;
+            if (Directory.Exists(full)) Directory.Delete(full, true);
+        }
+        catch { /* A temporary download can be removed on the next cleanup. */ }
     }
 }
 
@@ -431,6 +599,24 @@ internal sealed class BoardForm : Form
         var screens = new ToolStripMenuItem("切换显示器") { DropDown = Ui.Menu() };
         screens.DropDownOpening += (_, _) => PopulateScreenMenu(screens.DropDownItems);
         menu.Items.Add(screens);
+        var checkUpdates = new ToolStripMenuItem("检查更新");
+        checkUpdates.Click += async (_, _) =>
+        {
+            checkUpdates.Enabled = false;
+            checkUpdates.Text = "正在检查 / 下载更新…";
+            bool installing = await AppUpdater.CheckAndInstallAsync(this);
+            if (installing)
+            {
+                exiting = true;
+                Close();
+            }
+            else if (!IsDisposed)
+            {
+                checkUpdates.Text = "检查更新";
+                checkUpdates.Enabled = true;
+            }
+        };
+        menu.Items.Add(checkUpdates);
         var startAtLogin = new ToolStripMenuItem("开机自启");
         menu.Opening += (_, _) => startAtLogin.Checked = StartupSettings.IsEnabled();
         startAtLogin.Click += (_, _) =>
