@@ -1661,6 +1661,7 @@ internal sealed class TextEditorForm : Form
 internal sealed class ImageViewerForm : Form
 {
     private readonly Image? image;
+
     public ImageViewerForm(string path)
     {
         Text = "查看图片";
@@ -1679,13 +1680,66 @@ internal sealed class ImageViewerForm : Form
             using var stream = File.OpenRead(path);
             using var original = Image.FromStream(stream);
             image = new Bitmap(original);
-            var box = new PictureBox
+
+            var canvas = new ImageCanvas(image)
             {
-                Location = new Point(12, 54), Size = new Size(ClientSize.Width - 24, ClientSize.Height - 66),
-                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-                Image = image, SizeMode = PictureBoxSizeMode.Zoom
+                Location = new Point(12, 54),
+                Size = new Size(ClientSize.Width - 24, ClientSize.Height - 118),
+                Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right
             };
-            Controls.Add(box);
+            Controls.Add(canvas);
+
+            var hint = new Label
+            {
+                Text = "滚轮缩放  ·  拖动平移",
+                Location = new Point(16, ClientSize.Height - 40),
+                Size = new Size(250, 28),
+                Anchor = AnchorStyles.Left | AnchorStyles.Bottom,
+                ForeColor = Ui.Muted,
+                TextAlign = ContentAlignment.MiddleLeft
+            };
+            Controls.Add(hint);
+
+            var zoomOut = Ui.ToolbarButton("−", 36);
+            zoomOut.Location = new Point(ClientSize.Width - 236, ClientSize.Height - 42);
+            zoomOut.Size = new Size(36, 32);
+            zoomOut.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+            zoomOut.Click += (_, _) => canvas.ZoomAt(1f / 1.25f, canvas.Center);
+            Controls.Add(zoomOut);
+
+            var zoomText = new Label
+            {
+                Location = new Point(ClientSize.Width - 192, ClientSize.Height - 42),
+                Size = new Size(62, 32),
+                Anchor = AnchorStyles.Right | AnchorStyles.Bottom,
+                ForeColor = Ui.Accent,
+                Font = new Font("Consolas", 10F, FontStyle.Bold),
+                TextAlign = ContentAlignment.MiddleCenter
+            };
+            Controls.Add(zoomText);
+
+            var zoomIn = Ui.ToolbarButton("+", 36);
+            zoomIn.Location = new Point(ClientSize.Width - 122, ClientSize.Height - 42);
+            zoomIn.Size = new Size(36, 32);
+            zoomIn.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+            zoomIn.Click += (_, _) => canvas.ZoomAt(1.25f, canvas.Center);
+            Controls.Add(zoomIn);
+
+            var fit = Ui.ToolbarButton("适应", 64);
+            fit.Location = new Point(ClientSize.Width - 78, ClientSize.Height - 42);
+            fit.Size = new Size(64, 32);
+            fit.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+            fit.Click += (_, _) => canvas.FitToWindow();
+            Controls.Add(fit);
+
+            canvas.ZoomChanged += () => zoomText.Text = $"{canvas.Zoom * 100:0}%";
+            Paint += (_, e) =>
+            {
+                using var line = new Pen(Ui.Line);
+                e.Graphics.DrawLine(line, 12, ClientSize.Height - 52,
+                    ClientSize.Width - 13, ClientSize.Height - 52);
+            };
+            Shown += (_, _) => { canvas.FitToWindow(); canvas.Focus(); };
         }
         catch (Exception ex)
         {
@@ -1698,5 +1752,137 @@ internal sealed class ImageViewerForm : Form
             });
         }
         FormClosed += (_, _) => image?.Dispose();
+    }
+}
+
+internal sealed class ImageCanvas : Control
+{
+    private readonly Image image;
+    private float zoom = 1f;
+    private PointF origin;
+    private bool fitted = true;
+    private bool dragging;
+    private Point lastMouse;
+
+    public event Action? ZoomChanged;
+    public float Zoom => zoom;
+    public Point Center => new(Width / 2, Height / 2);
+
+    public ImageCanvas(Image image)
+    {
+        this.image = image;
+        DoubleBuffered = true;
+        TabStop = true;
+        BackColor = Ui.Surface;
+    }
+
+    public void FitToWindow()
+    {
+        if (Width <= 0 || Height <= 0) return;
+        zoom = FitZoom();
+        origin = new PointF((Width - image.Width * zoom) / 2f,
+            (Height - image.Height * zoom) / 2f);
+        fitted = true;
+        Cursor = Cursors.Default;
+        ZoomChanged?.Invoke();
+        Invalidate();
+    }
+
+    public void ZoomAt(float factor, Point anchor)
+    {
+        if (Width <= 0 || Height <= 0) return;
+        float fitZoom = FitZoom();
+        float next = Math.Clamp(zoom * factor,
+            Math.Min(0.05f, fitZoom / 4f), Math.Max(16f, fitZoom * 4f));
+        if (Math.Abs(next - zoom) < 0.0001f) return;
+
+        float imageX = (anchor.X - origin.X) / zoom;
+        float imageY = (anchor.Y - origin.Y) / zoom;
+        zoom = next;
+        origin = new PointF(anchor.X - imageX * zoom, anchor.Y - imageY * zoom);
+        fitted = false;
+        ConstrainOrigin();
+        Cursor = CanPan ? Cursors.SizeAll : Cursors.Default;
+        ZoomChanged?.Invoke();
+        Invalidate();
+    }
+
+    private float FitZoom() => Math.Min(Width / (float)image.Width,
+        Height / (float)image.Height);
+
+    private bool CanPan => image.Width * zoom > Width + 1 ||
+        image.Height * zoom > Height + 1;
+
+    private void ConstrainOrigin()
+    {
+        float width = image.Width * zoom;
+        float height = image.Height * zoom;
+        origin.X = width <= Width ? (Width - width) / 2f
+            : Math.Clamp(origin.X, Width - width, 0f);
+        origin.Y = height <= Height ? (Height - height) / 2f
+            : Math.Clamp(origin.Y, Height - height, 0f);
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (image is null || Width <= 0 || Height <= 0) return;
+        if (fitted) FitToWindow();
+        else
+        {
+            ConstrainOrigin();
+            Invalidate();
+        }
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        e.Graphics.InterpolationMode = zoom >= 1f
+            ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBicubic;
+        e.Graphics.PixelOffsetMode = zoom >= 1f
+            ? PixelOffsetMode.Half : PixelOffsetMode.HighQuality;
+        e.Graphics.DrawImage(image, new RectangleF(origin.X, origin.Y,
+            image.Width * zoom, image.Height * zoom));
+    }
+
+    protected override void OnMouseEnter(EventArgs e)
+    {
+        base.OnMouseEnter(e);
+        Focus();
+    }
+
+    protected override void OnMouseWheel(MouseEventArgs e)
+    {
+        ZoomAt((float)Math.Pow(1.2, e.Delta / 120d), e.Location);
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left || !CanPan) return;
+        dragging = true;
+        lastMouse = e.Location;
+        Capture = true;
+        Focus();
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (!dragging) return;
+        origin = new PointF(origin.X + e.X - lastMouse.X,
+            origin.Y + e.Y - lastMouse.Y);
+        lastMouse = e.Location;
+        ConstrainOrigin();
+        Invalidate();
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        if (e.Button != MouseButtons.Left) return;
+        dragging = false;
+        Capture = false;
     }
 }
