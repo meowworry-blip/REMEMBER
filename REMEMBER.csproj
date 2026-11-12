@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <ApplicationManifest></ApplicationManifest>
     <AssemblyName>REMEMBER</AssemblyName>
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <ApplicationIcon>remember.ico</ApplicationIcon>
     <RootNamespace>Remember</RootNamespace>
   </PropertyGroup>

@@ -469,7 +469,7 @@ internal sealed class EdgeHandle : Control
     {
         DoubleBuffered = true;
         Cursor = Cursors.Hand;
-        Size = new Size(112, 8);
+        Size = new Size(160, 22);
         MouseEnter += (_, _) => { hovered = true; Invalidate(); };
         MouseLeave += (_, _) => { hovered = false; Invalidate(); };
     }
@@ -477,21 +477,42 @@ internal sealed class EdgeHandle : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        using var dark = new SolidBrush(Ui.Surface);
+        e.Graphics.Clear(Ui.Surface);
         using var accent = new SolidBrush(Ui.Accent);
         using var cyan = new SolidBrush(Ui.Secondary);
-        e.Graphics.FillRectangle(dark, ClientRectangle);
+        using var text = new SolidBrush(Ui.Text);
+        using var border = new Pen(Ui.Line);
+        using var font = new Font("Consolas", 9F, FontStyle.Bold);
+        e.Graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+        int size = hovered ? 4 : 2;
         if (Edge is DockEdge.Left or DockEdge.Right)
         {
-            int x = Edge == DockEdge.Right ? Width - (hovered ? 4 : 2) : 0;
-            e.Graphics.FillRectangle(accent, x, 0, hovered ? 4 : 2, Height);
-            e.Graphics.FillRectangle(cyan, x, Height / 2 - 12, 2, 24);
+            int x = Edge == DockEdge.Right ? Width - size : 0;
+            e.Graphics.FillRectangle(accent, x, 0, size, Height);
+            e.Graphics.FillRectangle(cyan, x, Height / 2 - 13, size, 26);
+            GraphicsState state = e.Graphics.Save();
+            e.Graphics.TranslateTransform(Width / 2f, Height / 2f);
+            e.Graphics.RotateTransform(Edge == DockEdge.Left ? -90 : 90);
+            using var format = new StringFormat
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center
+            };
+            e.Graphics.DrawString("REMEMBER  GRID", font, text,
+                new RectangleF(-Height / 2f, -Width / 2f, Height, Width), format);
+            e.Graphics.Restore(state);
         }
         else
         {
-            int y = Edge == DockEdge.Bottom ? Height - (hovered ? 4 : 2) : 0;
-            e.Graphics.FillRectangle(accent, 0, y, Width, hovered ? 4 : 2);
-            e.Graphics.FillRectangle(cyan, Width / 2 - 12, y, 24, 2);
+            int y = Edge == DockEdge.Bottom ? Height - size : 0;
+            e.Graphics.FillRectangle(accent, 0, y, Width, size);
+            e.Graphics.FillRectangle(cyan, Width / 2 - 13, y, 26, size);
+            TextRenderer.DrawText(e.Graphics, "REMEMBER", font,
+                new Rectangle(12, 3, 102, Height - 5), Ui.Text,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            TextRenderer.DrawText(e.Graphics, "GRID", font,
+                new Rectangle(118, 3, 36, Height - 5), Ui.Secondary,
+                TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
         }
     }
 }
@@ -500,8 +521,8 @@ internal sealed class BoardForm : Form
 {
     private const int ExpandedWidth = 1008;
     private const int ExpandedHeight = 480;
-    private const int CollapsedWidth = 112;
-    private const int CollapsedHeight = 8;
+    private const int CollapsedWidth = 160;
+    private const int CollapsedHeight = 22;
     private const int DefaultColumns = 13;
     private const int DefaultRows = 6;
     private static int activeColumns = DefaultColumns;
@@ -587,7 +608,7 @@ internal sealed class BoardForm : Form
         handle.Dock = DockStyle.Fill;
         handle.Edge = layout.Edge;
         var handleTip = new ToolTip();
-        handleTip.SetToolTip(handle, "REMEMBER · 移到边缘展开");
+        handleTip.SetToolTip(handle, "REMEMBER / GRID · 移到边缘展开");
         handle.Visible = false;
         handle.Click += (_, _) => SetCollapsed(false);
         handle.MouseEnter += (_, _) => { if (collapsed && !animation.Enabled) hoverTimer.Start(); };
